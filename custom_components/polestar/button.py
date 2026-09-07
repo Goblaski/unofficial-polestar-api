@@ -11,7 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from polestar_api.models.honkflash import HonkFlashAction
+from .polestar_api.models.honkflash import HonkFlashAction
 
 from .const import DOMAIN
 from .entity import PolestarEntity

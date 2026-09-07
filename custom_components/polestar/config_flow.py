@@ -10,11 +10,12 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 
-from polestar_api import PolestarApi
-from polestar_api.auth import MemoryTokenStore
-from polestar_api.exceptions import AuthError
+from .polestar_api import PolestarApi
+from .polestar_api.auth import MemoryTokenStore
+from .polestar_api.exceptions import AuthError
 
 from .const import CONF_DEMO, CONF_UPDATE_INTERVAL, CONF_VIN, DEFAULT_UPDATE_INTERVAL, DOMAIN
+from .token_store import HassTokenStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,6 +167,9 @@ class PolestarConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(vin)
             self._abort_if_unique_id_configured()
 
+            # Initial setup needs the password once so async_setup_entry can write
+            # tokens to the entry-specific private token store. __init__.py removes
+            # this field immediately after the first successful authentication.
             return self.async_create_entry(
                 title=f"Polestar ({vin})",
                 data={
@@ -217,11 +221,10 @@ class PolestarConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(vin)
             self._abort_if_unique_id_configured()
 
+            # Demo mode never talks to an API, so don't persist credentials at all.
             return self.async_create_entry(
                 title=f"Polestar Demo ({vin})",
                 data={
-                    CONF_EMAIL: self._email,
-                    CONF_PASSWORD: self._password,
                     CONF_VIN: vin,
                     CONF_DEMO: True,
                 },
@@ -249,7 +252,17 @@ class PolestarConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             password = user_input[CONF_PASSWORD]
-            api = PolestarApi(self._email, password, token_store=MemoryTokenStore())
+            entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+            if entry is None:
+                return self.async_abort(reason="reauth_successful")
+
+            # Authenticate directly into the persistent private token store. This
+            # avoids writing the password to core.config_entries during reauth.
+            api = PolestarApi(
+                self._email,
+                password,
+                token_store=HassTokenStore(self.hass, entry.entry_id),
+            )
             try:
                 await api.async_init()
             except AuthError:
@@ -258,14 +271,9 @@ class PolestarConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error during reauth")
                 errors["base"] = "cannot_connect"
             else:
-                await api.close()
-                entry = self.hass.config_entries.async_get_entry(
-                    self.context["entry_id"]
-                )
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    data={**entry.data, CONF_PASSWORD: password},
-                )
+                new_data = dict(entry.data)
+                new_data.pop(CONF_PASSWORD, None)
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
             finally:

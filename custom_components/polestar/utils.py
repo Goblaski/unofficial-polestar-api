@@ -8,9 +8,9 @@ from typing import Any
 
 from homeassistant.util import dt as dt_util
 
-from polestar_api.models.charge_location import ChargeLocation
-from polestar_api.models.common import Timestamp, Weekday
-from polestar_api.models.parking_climate_timer import ParkingClimateTimer
+from .polestar_api.models.charge_location import ChargeLocation
+from .polestar_api.models.common import Timestamp, Weekday
+from .polestar_api.models.parking_climate_timer import ParkingClimateTimer
 
 
 _EXCLUDED_ENUM_NAMES = {"UNSPECIFIED", "UNDEFINED", "UNKNOWN"}

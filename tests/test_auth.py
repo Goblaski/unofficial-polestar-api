@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from polestar_api.auth import MemoryTokenStore, TokenData
+from .polestar_api.auth import MemoryTokenStore, TokenData
 
 
 class TestTokenData:

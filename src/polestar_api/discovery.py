@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import ssl
 import uuid
 from dataclasses import dataclass
@@ -15,6 +17,16 @@ _SSL_CONTEXT = ssl.create_default_context()
 
 C3_DISCOVERY_URL = "https://cnepmob.volvocars.com/"
 C3_ACCEPT_HEADER = "application/volvo.cloud.cnepmob.v1+json"
+
+# Fail closed: the authenticated Volvo discovery service may select a regional
+# C3 host, but bearer tokens and VINs must never be sent outside Volvo Cars'
+# DNS namespace. Known EU and China C3 hosts fit these suffixes.
+_C3_ALLOWED_HOST_SUFFIXES = ("volvocars.com", "volvocars.com.cn")
+_C3_ALLOWED_PORTS = {443}
+_DNS_HOST_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+)
 
 APP_BACKEND_GRAPHQL_URL = "https://pc-api.polestar.com/eu-north-1/app-backend/api/graphql"
 APP_BACKEND_ACCEPT_HEADER = "multipart/mixed;deferSpec=20220824, application/graphql-response+json, application/json"
@@ -38,6 +50,7 @@ query GetVDMSCars {
 }
 """
 
+
 @dataclass
 class GrpcEndpoint:
     host: str
@@ -52,6 +65,52 @@ class VehicleInfo:
     registration_no: str | None = None
     model_year: int | None = None
     model_name: str | None = None
+
+
+def _host_matches_suffix(host: str, suffix: str) -> bool:
+    return host == suffix or host.endswith(f".{suffix}")
+
+
+def _validate_c3_endpoint(host: object, port: object) -> tuple[str, int]:
+    """Validate a C3 endpoint returned by Volvo discovery before using a token."""
+    if not isinstance(host, str) or not host:
+        raise ApiError("C3 discovery response missing grpcHost")
+
+    normalized_host = host.rstrip(".").lower()
+    try:
+        normalized_host.encode("ascii")
+    except UnicodeEncodeError as err:
+        raise ApiError("C3 discovery returned an invalid grpcHost") from err
+
+    if not _DNS_HOST_RE.fullmatch(normalized_host):
+        raise ApiError("C3 discovery returned an invalid grpcHost")
+
+    # Explicitly reject IP literals. Even public IPs would defeat the DNS
+    # namespace constraint and make hostname ownership impossible to reason about.
+    try:
+        ipaddress.ip_address(normalized_host)
+    except ValueError:
+        pass
+    else:
+        raise ApiError("C3 discovery returned an untrusted grpcHost")
+
+    if not any(
+        _host_matches_suffix(normalized_host, suffix)
+        for suffix in _C3_ALLOWED_HOST_SUFFIXES
+    ):
+        raise ApiError("C3 discovery returned an untrusted grpcHost")
+
+    if isinstance(port, bool):
+        raise ApiError("C3 discovery returned an invalid grpcPort")
+    try:
+        normalized_port = int(port)
+    except (TypeError, ValueError) as err:
+        raise ApiError("C3 discovery returned an invalid grpcPort") from err
+
+    if normalized_port not in _C3_ALLOWED_PORTS:
+        raise ApiError("C3 discovery returned an untrusted grpcPort")
+
+    return normalized_host, normalized_port
 
 
 async def discover_c3_endpoint(access_token: str) -> GrpcEndpoint:
@@ -69,16 +128,18 @@ async def discover_c3_endpoint(access_token: str) -> GrpcEndpoint:
 
         data = r.json()
 
-    # The response contains c3 and c3Lbs environments
+    if not isinstance(data, dict):
+        raise ApiError("C3 discovery returned an invalid response")
+
+    # The response contains c3 and c3Lbs environments.
     c3 = data.get("c3", {})
-    host = c3.get("grpcHost")
-    port = c3.get("grpcPort", 443)
+    if not isinstance(c3, dict):
+        raise ApiError("C3 discovery returned an invalid c3 configuration")
+
+    host, port = _validate_c3_endpoint(c3.get("grpcHost"), c3.get("grpcPort", 443))
     keep_alive = c3.get("grpcKeepAliveTime")
 
-    if not host:
-        raise ApiError("C3 discovery response missing grpcHost")
-
-    return GrpcEndpoint(host=host, port=int(port), keep_alive_time=keep_alive)
+    return GrpcEndpoint(host=host, port=port, keep_alive_time=keep_alive)
 
 
 async def get_vehicles(access_token: str) -> list[VehicleInfo]:
@@ -98,7 +159,10 @@ async def get_vehicles(access_token: str) -> list[VehicleInfo]:
             json=_app_backend_payload(),
         )
         if response.status_code != 200:
-            raise ApiError(f"Vehicle list failed (app-backend: {_http_failure(response)})", response.status_code)
+            raise ApiError(
+                f"Vehicle list failed (app-backend: {_http_failure(response)})",
+                response.status_code,
+            )
 
         data = response.json()
         graphql_error = _graphql_error_text(data.get("errors"))
@@ -171,22 +235,23 @@ def _graphql_error_text(errors: object) -> str | None:
         if isinstance(error, dict):
             message = error.get("message")
             if isinstance(message, str) and message:
-                messages.append(message)
+                # Keep server-controlled error text single-line to avoid log forging.
+                messages.append(message.replace("\r", " ").replace("\n", " ")[:200])
 
     if messages:
-        return "; ".join(messages)
+        return "; ".join(messages)[:500]
     return "graphql error"
 
 
 def _http_failure(response: httpx.Response) -> str:
-    """Return a compact HTTP failure summary including body message when present."""
+    """Return a compact HTTP failure summary including bounded body detail."""
     detail: str | None = None
     try:
         payload = response.json()
     except ValueError:
         text = response.text.strip()
         if text:
-            detail = text.replace("\n", " ")[:200]
+            detail = text.replace("\r", " ").replace("\n", " ")[:200]
     else:
         if isinstance(payload, dict):
             detail = _graphql_error_text(payload.get("errors"))
@@ -194,7 +259,7 @@ def _http_failure(response: httpx.Response) -> str:
                 for key in ("message", "error", "detail"):
                     value = payload.get(key)
                     if isinstance(value, str) and value:
-                        detail = value
+                        detail = value.replace("\r", " ").replace("\n", " ")[:200]
                         break
 
     if detail:

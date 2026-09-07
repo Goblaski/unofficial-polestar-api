@@ -1,6 +1,6 @@
 """Tests for all domain models — round-trip encode/decode."""
 
-from polestar_api.models.exterior import (
+from .polestar_api.models.exterior import (
     AlarmStatus,
     CentralLockStatus,
     DoorStatus,
@@ -15,9 +15,9 @@ from polestar_api.models.exterior import (
     WindowStatus,
     WindowsStatus,
 )
-from polestar_api.models.climate import ClimatizationInfo, ClimatizationRunningStatus, ClimatizationRequestType, HeatOrCoolAction
-from polestar_api.models.connectivity import ConnectivityInfo, ConnectivityStatus, NetworkType, SignalStrength
-from polestar_api.models.dashboard import (
+from .polestar_api.models.climate import ClimatizationInfo, ClimatizationRunningStatus, ClimatizationRequestType, HeatOrCoolAction
+from .polestar_api.models.connectivity import ConnectivityInfo, ConnectivityStatus, NetworkType, SignalStrength
+from .polestar_api.models.dashboard import (
     CarDashboardData,
     CarWarningsData,
     DashboardStatus,
@@ -25,8 +25,8 @@ from polestar_api.models.dashboard import (
     TyrePressureWarning,
     ServiceWarningTrigger,
 )
-from polestar_api.models.honkflash import HonkAndFlashRequest, HonkAndFlashResponse, HonkFlashAction
-from polestar_api.models.locks import (
+from .polestar_api.models.honkflash import HonkAndFlashRequest, HonkAndFlashResponse, HonkFlashAction
+from .polestar_api.models.locks import (
     CarLockRequest,
     CarLockResponse,
     CarUnlockRequest,
@@ -34,8 +34,8 @@ from polestar_api.models.locks import (
     LockType,
     UnlockType,
 )
-from polestar_api.models.availability import Availability, AvailabilityStatus, UnavailableReason, UsageMode
-from polestar_api.models.charging import (
+from .polestar_api.models.availability import Availability, AvailabilityStatus, UnavailableReason, UsageMode
+from .polestar_api.models.charging import (
     AmpLimitResponse,
     BatteryChargeTimer,
     ChargeNowRequest,
@@ -50,14 +50,14 @@ from polestar_api.models.charging import (
     TargetSocResponse,
     TimeZoneOffset,
 )
-from polestar_api.models.charging import DailyTime as ChargeTimerDailyTime
-from polestar_api.models.climatization import (
+from .polestar_api.models.charging import DailyTime as ChargeTimerDailyTime
+from .polestar_api.models.climatization import (
     ClimatizationResponse,
     ClimatizationStartRequest,
     HeatingIntensity,
 )
-from polestar_api.models.invocation import InvocationResponse, InvocationStatus
-from polestar_api.models.health import (
+from .polestar_api.models.invocation import InvocationResponse, InvocationStatus
+from .polestar_api.models.health import (
     Health,
     ServiceWarning,
     ExteriorLightWarning,
@@ -65,7 +65,7 @@ from polestar_api.models.health import (
     BrakeFluidLevelWarning,
     LowVoltageBatteryWarning,
 )
-from polestar_api.models.ota import (
+from .polestar_api.models.ota import (
     CarSoftwareInfo,
     Scheduler,
     SoftwareDescription,
@@ -73,19 +73,19 @@ from polestar_api.models.ota import (
     ScheduleStatus,
     ScheduleSetBy,
 )
-from polestar_api.models.weather import WeatherReport
-from polestar_api.models.window import WindowControlRequest, WindowControlType
-from polestar_api.models.odometer import OdometerStatus
-from polestar_api.models.wakeup import WakeUpRequest, WakeUpResponse, WakeUpReason
-from polestar_api.models.common import DailyTime, ResponseStatus, Weekday
-from polestar_api.models.precleaning import (
+from .polestar_api.models.weather import WeatherReport
+from .polestar_api.models.window import WindowControlRequest, WindowControlType
+from .polestar_api.models.odometer import OdometerStatus
+from .polestar_api.models.wakeup import WakeUpRequest, WakeUpResponse, WakeUpReason
+from .polestar_api.models.common import DailyTime, ResponseStatus, Weekday
+from .polestar_api.models.precleaning import (
     PreCleaningInfo,
     PreCleaningRunningStatus,
     PreCleaningStartReason,
     PreCleaningErrorType,
 )
-from polestar_api.models.parking_climate_timer import ParkingClimateTimer
-from polestar_api.models.charge_location import (
+from .polestar_api.models.parking_climate_timer import ParkingClimateTimer
+from .polestar_api.models.charge_location import (
     ChargeLocation,
     ChargeLocationTimer,
     ChargeLocationDepartureTime,
@@ -680,11 +680,11 @@ class TestChargeLocation:
 
 class TestPackedVarints:
     def test_decode_packed_varints(self):
-        from polestar_api.codec import decode_packed_varints, encode_packed_varints
+        from .polestar_api.codec import decode_packed_varints, encode_packed_varints
         values = [1, 3, 5, 7]
         encoded = encode_packed_varints(6, values)
         # Strip the tag + length prefix to get just the packed data
-        from polestar_api.codec import decode_varint
+        from .polestar_api.codec import decode_varint
         _, pos = decode_varint(encoded, 0)  # skip tag
         length, pos = decode_varint(encoded, pos)  # skip length
         packed_data = encoded[pos:pos + length]

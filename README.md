@@ -37,7 +37,7 @@ See the [HA integration README](ha_integration_README.md) for setup, entities, s
 
 
     python  
-    from polestar_api import PolestarApi  
+    from .polestar_api import PolestarApi  
       
     async with PolestarApi(email="you@example.com", password="...") as api:  
      vehicles = await api.get_vehicles() car = vehicles[0]  

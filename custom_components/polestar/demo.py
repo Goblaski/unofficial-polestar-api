@@ -8,21 +8,21 @@ from dataclasses import replace
 import logging
 import random
 
-from polestar_api.models.availability import (
+from .polestar_api.models.availability import (
     Availability,
     AvailabilityStatus,
     UnavailableReason,
     UsageMode,
 )
-from polestar_api.models.battery import (
+from .polestar_api.models.battery import (
     Battery,
     ChargerConnectionStatus,
     ChargerPowerStatus,
     ChargingStatus,
     ChargingType,
 )
-from polestar_api.models.charge_location import ChargeLocation, ChargeLocationType, OptimisedChargingType
-from polestar_api.models.charging import (
+from .polestar_api.models.charge_location import ChargeLocation, ChargeLocationType, OptimisedChargingType
+from .polestar_api.models.charging import (
     AmpLimitResponse,
     BatteryChargeTimer,
     ChargeTargetLevelSettingType,
@@ -30,18 +30,18 @@ from polestar_api.models.charging import (
     DailyTime,
     TargetSocResponse,
 )
-from polestar_api.models.climate import (
+from .polestar_api.models.climate import (
     ClimatizationInfo,
     ClimatizationRequestType,
     ClimatizationRunningStatus,
     HeatOrCoolAction,
 )
-from polestar_api.models.climatization import HeatingIntensity
-from polestar_api.models.common import Coordinate, ResponseStatus, ResponseStatusCode, Timestamp, Weekday
-from polestar_api.models.common import Location
-from polestar_api.models.connectivity import ConnectivityInfo, ConnectivityStatus, NetworkType, SignalStrength
-from polestar_api.models.dashboard import CarDashboardData, DashboardStatus
-from polestar_api.models.exterior import (
+from .polestar_api.models.climatization import HeatingIntensity
+from .polestar_api.models.common import Coordinate, ResponseStatus, ResponseStatusCode, Timestamp, Weekday
+from .polestar_api.models.common import Location
+from .polestar_api.models.connectivity import ConnectivityInfo, ConnectivityStatus, NetworkType, SignalStrength
+from .polestar_api.models.dashboard import CarDashboardData, DashboardStatus
+from .polestar_api.models.exterior import (
     CentralLockStatus,
     DoorStatus,
     DoorsStatus,
@@ -55,7 +55,7 @@ from polestar_api.models.exterior import (
     WindowsStatus,
     WindowStatus,
 )
-from polestar_api.models.health import (
+from .polestar_api.models.health import (
     BrakeFluidLevelWarning,
     EngineCoolantLevelWarning,
     Health,
@@ -64,20 +64,20 @@ from polestar_api.models.health import (
     ServiceWarning,
     WasherFluidLevelWarning,
 )
-from polestar_api.models.ota import CarSoftwareInfo, ScheduleInfo, ScheduleSetBy, ScheduleStatus, Scheduler, SoftwareState
-from polestar_api.models.parking_climate_timer import (
+from .polestar_api.models.ota import CarSoftwareInfo, ScheduleInfo, ScheduleSetBy, ScheduleStatus, Scheduler, SoftwareState
+from .polestar_api.models.parking_climate_timer import (
     BatteryPreconditioning,
     ParkingClimateTimer,
     ParkingClimateTimerSettings,
     SeatHeatingSettings,
 )
-from polestar_api.models.precleaning import (
+from .polestar_api.models.precleaning import (
     PreCleaningErrorType,
     PreCleaningInfo,
     PreCleaningRunningStatus,
     PreCleaningStartReason,
 )
-from polestar_api.models.weather import WeatherReport
+from .polestar_api.models.weather import WeatherReport
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -342,7 +342,7 @@ class DemoVehicle:
         )
 
     async def get_odometer(self):
-        from polestar_api.models.odometer import OdometerStatus
+        from .polestar_api.models.odometer import OdometerStatus
 
         return OdometerStatus(odometer_km=12450.0)
 

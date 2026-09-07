@@ -14,9 +14,9 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 from .entity import PolestarEntity
-from polestar_api.models.charging import ChargeTargetLevelSettingType
-from polestar_api.models.climatization import HeatingIntensity
-from polestar_api.models.parking_climate_timer import (
+from .polestar_api.models.charging import ChargeTargetLevelSettingType
+from .polestar_api.models.climatization import HeatingIntensity
+from .polestar_api.models.parking_climate_timer import (
     BatteryPreconditioning,
     ParkingClimateTimerSettings,
     SeatHeatingSettings,

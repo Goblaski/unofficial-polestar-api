@@ -11,7 +11,7 @@ from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 
 if TYPE_CHECKING:
-    from polestar_api.vehicle import Vehicle
+    from .polestar_api.vehicle import Vehicle
 
 
 class PolestarEntity(CoordinatorEntity[PolestarCoordinator]):

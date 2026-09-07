@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.helpers.storage import Store
 
-from polestar_api.auth import TokenData
+from .polestar_api.auth import TokenData
 
 from .const import DOMAIN
 
@@ -20,7 +20,15 @@ class HassTokenStore:
     """Stores Polestar auth tokens in HA's .storage/ directory."""
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
-        self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.tokens.{entry_id}")
+        # Tokens are secrets. Home Assistant's private Store mode keeps the file
+        # owner-only (0600 on normal local filesystems) instead of the default 0644.
+        self._store = Store(
+            hass,
+            STORAGE_VERSION,
+            f"{DOMAIN}.tokens.{entry_id}",
+            private=True,
+            atomic_writes=True,
+        )
 
     async def load(self) -> TokenData | None:
         data = await self._store.async_load()

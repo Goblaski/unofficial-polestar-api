@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
+import ssl
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import parse_qs, urlparse
-
-import ssl
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 
@@ -28,6 +28,10 @@ OIDC_DISCOVERY = f"{OIDC_PROVIDER}/.well-known/openid-configuration"
 CLIENT_ID = "lp8dyrd_10"
 REDIRECT_URI = "polestar-explore://explore.polestar.com"
 SCOPES = "openid profile email customer:attributes customer:attributes:write"
+
+_OIDC_HOST = "polestarid.eu.polestar.com"
+_ALLOWED_CALLBACK_HOSTS = {"www.polestar.com"}
+_ALLOWED_HTTPS_PORTS = {443}
 
 
 @dataclass
@@ -112,9 +116,167 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+def _host_matches_suffix(host: str, suffix: str) -> bool:
+    host = host.rstrip(".").lower()
+    suffix = suffix.rstrip(".").lower()
+    return host == suffix or host.endswith(f".{suffix}")
+
+
+def _validate_https_url(
+    url: str,
+    *,
+    label: str,
+    exact_hosts: set[str] | None = None,
+    allowed_suffixes: tuple[str, ...] = (),
+) -> str:
+    """Validate a security-sensitive HTTPS endpoint before sending secrets."""
+    if not isinstance(url, str) or not url:
+        raise AuthError(f"Invalid {label}: missing URL")
+
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as err:
+        raise AuthError(f"Invalid {label}: malformed URL") from err
+
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme.lower() != "https" or not host:
+        raise AuthError(f"Invalid {label}: HTTPS is required")
+    if parsed.username is not None or parsed.password is not None:
+        raise AuthError(f"Invalid {label}: userinfo is not allowed")
+    if port is not None and port not in _ALLOWED_HTTPS_PORTS:
+        raise AuthError(f"Invalid {label}: unexpected port")
+
+    allowed = False
+    if exact_hosts and host in {item.lower() for item in exact_hosts}:
+        allowed = True
+    if allowed_suffixes and any(_host_matches_suffix(host, suffix) for suffix in allowed_suffixes):
+        allowed = True
+    if not allowed:
+        raise AuthError(f"Invalid {label}: untrusted hostname")
+
+    return url
+
+
+def _validate_oidc_config(config: object) -> tuple[str, str]:
+    """Validate OIDC discovery output against the fixed Polestar issuer."""
+    if not isinstance(config, dict):
+        raise AuthError("Invalid OIDC discovery response")
+
+    issuer = config.get("issuer")
+    if not isinstance(issuer, str) or issuer.rstrip("/") != OIDC_PROVIDER:
+        raise AuthError("Invalid OIDC discovery response: unexpected issuer")
+
+    auth_endpoint = config.get("authorization_endpoint")
+    token_endpoint = config.get("token_endpoint")
+    if not isinstance(auth_endpoint, str) or not isinstance(token_endpoint, str):
+        raise AuthError("Invalid OIDC discovery response: missing endpoints")
+
+    _validate_https_url(
+        auth_endpoint,
+        label="OIDC authorization endpoint",
+        exact_hosts={_OIDC_HOST},
+    )
+    _validate_https_url(
+        token_endpoint,
+        label="OIDC token endpoint",
+        exact_hosts={_OIDC_HOST},
+    )
+    return auth_endpoint, token_endpoint
+
+
+def _validate_resume_url(location: str) -> str:
+    """Resolve and validate the PingFederate resume URL."""
+    resume_url = urljoin(f"{OIDC_PROVIDER}/", location)
+    return _validate_https_url(
+        resume_url,
+        label="OIDC resume endpoint",
+        exact_hosts={_OIDC_HOST},
+    )
+
+
+async def _get_oidc_login_page(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    params: dict[str, str],
+    max_redirects: int = 5,
+) -> httpx.Response:
+    """GET the OIDC login page while keeping every redirect on Polestar ID."""
+    current_url = _validate_https_url(
+        url,
+        label="OIDC authorization endpoint",
+        exact_hosts={_OIDC_HOST},
+    )
+    current_params: dict[str, str] | None = params
+
+    for _ in range(max_redirects + 1):
+        response = await client.get(
+            current_url,
+            params=current_params,
+            follow_redirects=False,
+        )
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            return response
+
+        location = response.headers.get("location")
+        if not location:
+            raise AuthError("OIDC redirect missing Location header")
+        current_url = urljoin(str(response.url), location)
+        current_url = _validate_https_url(
+            current_url,
+            label="OIDC authorization redirect",
+            exact_hosts={_OIDC_HOST},
+        )
+        # The redirect target already contains whatever query state the provider
+        # needs. Re-appending the initial OAuth parameters could duplicate them.
+        current_params = None
+
+    raise AuthError("Too many OIDC authorization redirects")
+
+
+def _authorization_values(
+    location: str,
+    *,
+    expected_state: str,
+) -> tuple[str | None, str | None]:
+    """Extract code/uid and strictly validate OAuth state when a code is returned."""
+    parsed = urlparse(location)
+    qs = parse_qs(parsed.query)
+    code = qs.get("code", [None])[0]
+    uid = qs.get("uid", [None])[0]
+
+    if code is not None:
+        returned_state = qs.get("state", [None])[0]
+        if not isinstance(returned_state, str) or not hmac.compare_digest(
+            returned_state, expected_state
+        ):
+            raise AuthError("OIDC state mismatch")
+
+    return code, uid
+
+
 def _should_follow_callback(location: str) -> bool:
-    """Return whether the callback URL can be fetched over HTTP."""
-    return urlparse(location).scheme in {"http", "https"}
+    """Return whether an old HTTPS callback is safe to fetch.
+
+    The current mobile-app flow uses a custom scheme and therefore returns False.
+    Older web flows are followed only when they stay within Polestar's HTTPS DNS
+    namespace. This prevents an upstream redirect from becoming an arbitrary GET.
+    """
+    try:
+        parsed = urlparse(location)
+        port = parsed.port
+    except ValueError:
+        return False
+
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme.lower() != "https" or not host:
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    if port is not None and port not in _ALLOWED_HTTPS_PORTS:
+        return False
+    return host in _ALLOWED_CALLBACK_HOSTS
 
 
 class AuthManager:
@@ -125,21 +287,19 @@ class AuthManager:
         self._tokens: TokenData | None = None
         self._auth_endpoint: str | None = None
         self._token_endpoint: str | None = None
-        self._email: str | None = None
-        self._password: str | None = None
 
     @property
     def access_token(self) -> str | None:
         return self._tokens.access_token if self._tokens else None
 
-    async def authenticate(self, email: str, password: str) -> None:
-        """Full OIDC/PKCE auth flow. Tries token refresh first if available."""
-        self._email = email
-        self._password = password
+    async def authenticate(self, email: str, password: str | None = None) -> None:
+        """Authenticate using a refresh token first, then credentials if supplied.
 
-        # Try loading stored tokens
+        Passwords are intentionally not retained by AuthManager. Once the initial
+        OIDC exchange succeeds, token refresh is the only unattended credential
+        path. If refresh later fails, callers must trigger an explicit reauth flow.
+        """
         self._tokens = await self._token_store.load()
-
         await self._discover_endpoints()
 
         if self._tokens and self._tokens.refresh_token:
@@ -147,12 +307,21 @@ class AuthManager:
                 await self._refresh()
                 return
             except (AuthError, httpx.HTTPStatusError):
-                pass  # Fall through to full auth
+                # A transient refresh failure should not discard an access token
+                # that is still usable. Reauth is required only once it expires.
+                if not self._tokens.is_expired:
+                    return
+
+        if self._tokens and not self._tokens.is_expired:
+            return
+
+        if password is None:
+            raise TokenExpiredError("No valid refresh token; Polestar re-authentication required")
 
         await self._full_auth(email, password)
 
     async def ensure_valid_token(self) -> str:
-        """Return a valid access token, refreshing or re-authenticating if needed."""
+        """Return a valid access token, refreshing when needed."""
         if not self._tokens:
             raise AuthError("Not authenticated")
 
@@ -162,23 +331,17 @@ class AuthManager:
                     await self._refresh()
                     return self._tokens.access_token
                 except (AuthError, httpx.HTTPStatusError):
-                    pass  # Refresh token also expired, fall through
+                    pass
 
-            # Re-authenticate with stored credentials
-            if self._email and self._password:
-                await self._full_auth(self._email, self._password)
-            else:
-                raise TokenExpiredError("Token expired and no credentials available for re-auth")
+            raise TokenExpiredError("Token expired; Polestar re-authentication required")
 
         return self._tokens.access_token
 
     async def _discover_endpoints(self) -> None:
-        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT) as client:
+        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT, timeout=30) as client:
             r = await client.get(OIDC_DISCOVERY)
             r.raise_for_status()
-            config = r.json()
-            self._auth_endpoint = config["authorization_endpoint"]
-            self._token_endpoint = config["token_endpoint"]
+            self._auth_endpoint, self._token_endpoint = _validate_oidc_config(r.json())
 
     async def _full_auth(self, email: str, password: str) -> None:
         if not self._auth_endpoint or not self._token_endpoint:
@@ -201,18 +364,21 @@ class AuthManager:
             "response_mode": "query",
         }
 
-        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT, follow_redirects=True, timeout=30) as client:
-            # Step 1: GET auth endpoint — lands on login page
-            r = await client.get(self._auth_endpoint, params=params)
+        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT, timeout=30) as client:
+            # Step 1: GET auth endpoint — lands on login page. Redirects are
+            # followed manually so they cannot escape the Polestar ID hostname.
+            r = await _get_oidc_login_page(client, self._auth_endpoint, params=params)
 
-            # Extract resume path from PingFederate HTML/JS
+            # Extract resume path from PingFederate HTML/JS.
             resume_match = re.search(r'(?:url|action):\s*"(.+)"', r.text)
             if not resume_match:
-                raise AuthError(f"Could not find resume path in auth response (status {r.status_code})")
+                raise AuthError(
+                    f"Could not find resume path in auth response (status {r.status_code})"
+                )
+            resume_url = _validate_resume_url(resume_match.group(1))
 
-            resume_url = f"{OIDC_PROVIDER}{resume_match.group(1)}"
-
-            # Step 2: POST credentials
+            # Step 2: POST credentials. The validated resume URL is pinned to the
+            # Polestar ID host, so username/password cannot be redirected elsewhere.
             r = await client.post(
                 resume_url,
                 params=params,
@@ -225,15 +391,11 @@ class AuthManager:
                     raise AuthError("Invalid username or password")
                 raise AuthError(f"Auth failed with status {r.status_code}")
 
-            # Step 3: Extract code from redirect
+            # Step 3: Extract code from redirect and validate OAuth state.
             location = r.headers.get("location", "")
-            parsed = urlparse(location)
-            qs = parse_qs(parsed.query)
+            code, uid = _authorization_values(location, expected_state=state)
 
-            code = qs.get("code", [None])[0]
-            uid = qs.get("uid", [None])[0]
-
-            # Handle Terms & Conditions acceptance
+            # Handle Terms & Conditions acceptance.
             if code is None and uid is not None:
                 r = await client.post(
                     resume_url,
@@ -243,12 +405,10 @@ class AuthManager:
                 )
                 if r.status_code in (302, 303):
                     location = r.headers.get("location", "")
-                    parsed = urlparse(location)
-                    qs = parse_qs(parsed.query)
-                    code = qs.get("code", [None])[0]
+                    code, _ = _authorization_values(location, expected_state=state)
 
             if code is None:
-                raise AuthError(f"No auth code in redirect: {location}")
+                raise AuthError("No auth code in redirect")
 
             # Old web flows used an HTTPS callback we could fetch; the current
             # mobile-app flow redirects to a custom scheme that is not fetchable.
@@ -258,7 +418,10 @@ class AuthManager:
         return code
 
     async def _exchange_token(self, code: str, code_verifier: str) -> None:
-        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT) as client:
+        if not self._token_endpoint:
+            raise AuthError("OIDC token endpoint is not initialized")
+
+        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT, timeout=30) as client:
             r = await client.post(
                 self._token_endpoint,
                 data={
@@ -286,8 +449,10 @@ class AuthManager:
 
         if not self._tokens or not self._tokens.refresh_token:
             raise AuthError("No refresh token available")
+        if not self._token_endpoint:
+            raise AuthError("OIDC token endpoint is not initialized")
 
-        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT) as client:
+        async with httpx.AsyncClient(verify=_HTTPX_SSL_CONTEXT, timeout=30) as client:
             r = await client.post(
                 self._token_endpoint,
                 data={

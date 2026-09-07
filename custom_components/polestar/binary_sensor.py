@@ -15,8 +15,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from polestar_api.models.exterior import OpenStatus
-from polestar_api.models.health import LowVoltageBatteryWarning, ServiceWarning
+from .polestar_api.models.exterior import OpenStatus
+from .polestar_api.models.health import LowVoltageBatteryWarning, ServiceWarning
 
 from .const import DOMAIN
 from .coordinator import PolestarVehicleData

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from polestar_api.exceptions import ApiError, AuthError
+from .polestar_api.exceptions import ApiError, AuthError
 
 
 class FakeConfigEntryAuthFailed(Exception):

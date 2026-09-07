@@ -17,7 +17,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 from .entity import PolestarEntity
-from polestar_api.models.ota import SoftwareState
+from .polestar_api.models.ota import SoftwareState
 from .utils import enum_name, timestamp_to_iso
 
 _IN_PROGRESS_STATES = {

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from .trip_recorder import create_trip_sensor_entities
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -30,26 +31,26 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from polestar_api.models.availability import UnavailableReason, UsageMode
-from polestar_api.models.battery import (
+from .polestar_api.models.availability import UnavailableReason, UsageMode
+from .polestar_api.models.battery import (
     ChargerConnectionStatus,
     ChargerPowerStatus,
     ChargingStatus,
     ChargingType,
 )
-from polestar_api.models.climate import (
+from .polestar_api.models.climate import (
     ClimatizationRequestType,
     ClimatizationRunningStatus,
     HeatOrCoolAction,
 )
-from polestar_api.models.health import (
+from .polestar_api.models.health import (
     BrakeFluidLevelWarning,
     LowVoltageBatteryWarning,
     ServiceWarning,
     WasherFluidLevelWarning,
 )
-from polestar_api.models.ota import SoftwareState
-from polestar_api.models.precleaning import PreCleaningErrorType, PreCleaningStartReason
+from .polestar_api.models.ota import SoftwareState
+from .polestar_api.models.precleaning import PreCleaningErrorType, PreCleaningStartReason
 
 from .const import DOMAIN
 from .coordinator import PolestarVehicleData
@@ -499,6 +500,15 @@ async def async_setup_entry(
     for coordinator in data["coordinators"].values():
         for desc in SENSORS:
             entities.append(PolestarSensor(coordinator, desc))
+    for recorder in data.get(
+        "trip_recorders",
+        {}
+    ).values():
+        entities.extend(
+            create_trip_sensor_entities(
+                recorder
+            )
+        )
     async_add_entities(entities)
 
 

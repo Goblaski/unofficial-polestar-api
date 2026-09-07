@@ -23,7 +23,7 @@ class PolestarApi:
     def __init__(
         self,
         email: str,
-        password: str,
+        password: str | None = None,
         *,
         token_store: TokenStore | None = None,
     ) -> None:
@@ -34,8 +34,18 @@ class PolestarApi:
         self._vehicle_cache: list[VehicleInfo] | None = None
 
     async def async_init(self) -> None:
-        """Authenticate and discover endpoints. Must be called before use."""
-        await self._auth.authenticate(self._email, self._password)
+        """Authenticate and discover endpoints. Must be called before use.
+
+        The password is held only for the initial authentication attempt and then
+        discarded from the long-lived client object. Runtime renewal uses the
+        refresh token; if that stops working, the caller must explicitly reauth.
+        """
+        password = self._password
+        try:
+            await self._auth.authenticate(self._email, password)
+        finally:
+            self._password = None
+
         token = await self._auth.ensure_valid_token()
         endpoint = await discover_c3_endpoint(token)
         self._connection = GrpcConnection(

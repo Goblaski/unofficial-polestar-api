@@ -27,7 +27,7 @@ from .const import (
     SERVICE_UPDATE_CHARGE_LOCATION,
 )
 from .coordinator import PolestarCoordinator
-from polestar_api.models.climatization import HeatingIntensity
+from .polestar_api.models.climatization import HeatingIntensity
 
 _TARGET_SCHEMA = {
     vol.Exclusive(ATTR_VIN, "target"): cv.string,

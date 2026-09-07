@@ -14,11 +14,11 @@ from grpclib.exceptions import GRPCError
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from polestar_api.exceptions import AuthError, TokenExpiredError
-from polestar_api.models.availability import Availability
-from polestar_api.models.battery import Battery
-from polestar_api.models.charge_location import ChargeLocation
-from polestar_api.models.charging import (
+from .polestar_api.exceptions import AuthError, TokenExpiredError
+from .polestar_api.models.availability import Availability
+from .polestar_api.models.battery import Battery
+from .polestar_api.models.charge_location import ChargeLocation
+from .polestar_api.models.charging import (
     AmpLimitResponse,
     BatteryChargeTimer,
     ChargeTargetLevelSettingType,
@@ -27,22 +27,22 @@ from polestar_api.models.charging import (
     TimeZoneOffset,
     TargetSocResponse,
 )
-from polestar_api.models.climate import ClimatizationInfo
-from polestar_api.models.climatization import HeatingIntensity
-from polestar_api.models.common import Location, ResponseStatusCode
-from polestar_api.models.connectivity import ConnectivityInfo
-from polestar_api.models.dashboard import DashboardStatus
-from polestar_api.models.exterior import ExteriorStatus
-from polestar_api.models.health import Health
-from polestar_api.models.invocation import InvocationStatus
-from polestar_api.models.odometer import OdometerStatus
-from polestar_api.models.ota import CarSoftwareInfo, Scheduler, SoftwareState
-from polestar_api.models.parking_climate_timer import (
+from .polestar_api.models.climate import ClimatizationInfo
+from .polestar_api.models.climatization import HeatingIntensity
+from .polestar_api.models.common import Location, ResponseStatusCode
+from .polestar_api.models.connectivity import ConnectivityInfo
+from .polestar_api.models.dashboard import DashboardStatus
+from .polestar_api.models.exterior import ExteriorStatus
+from .polestar_api.models.health import Health
+from .polestar_api.models.invocation import InvocationStatus
+from .polestar_api.models.odometer import OdometerStatus
+from .polestar_api.models.ota import CarSoftwareInfo, Scheduler, SoftwareState
+from .polestar_api.models.parking_climate_timer import (
     ParkingClimateTimer,
     ParkingClimateTimerSettings,
 )
-from polestar_api.models.precleaning import PreCleaningInfo
-from polestar_api.models.weather import WeatherReport
+from .polestar_api.models.precleaning import PreCleaningInfo
+from .polestar_api.models.weather import WeatherReport
 
 from .const import CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL, STREAM_MAX_RETRIES, STREAM_RETRY_DELAY
 from .utils import local_utc_offset_minutes
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-    from polestar_api.vehicle import Vehicle
+    from .polestar_api.vehicle import Vehicle
 
 _LOGGER = logging.getLogger(__name__)
 _POST_COMMAND_REFRESH_DELAYS: tuple[int, ...] = (3, 5)

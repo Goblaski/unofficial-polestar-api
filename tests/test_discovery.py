@@ -1,13 +1,13 @@
 import pytest
 
-from polestar_api.discovery import (
+from .polestar_api.discovery import (
     APP_BACKEND_GRAPHQL_URL,
     APP_FORCE_UPDATE_VERSION,
     APP_USER_AGENT,
     _app_backend_headers,
     get_vehicles,
 )
-from polestar_api.exceptions import ApiError
+from .polestar_api.exceptions import ApiError
 
 
 class TestAppBackendHeaders:

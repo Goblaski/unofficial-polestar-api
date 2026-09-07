@@ -16,8 +16,8 @@ from homeassistant.util import dt as dt_util
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 from .entity import PolestarEntity
-from polestar_api.models.common import Weekday
-from polestar_api.models.parking_climate_timer import ParkingClimateTimer
+from .polestar_api.models.common import Weekday
+from .polestar_api.models.parking_climate_timer import ParkingClimateTimer
 from .utils import serialize_parking_climate_timer
 
 _CALENDAR_SLOTS = (0, 1, 2)

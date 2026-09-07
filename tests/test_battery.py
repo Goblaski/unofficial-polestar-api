@@ -1,4 +1,4 @@
-from polestar_api.models.battery import (
+from .polestar_api.models.battery import (
     Battery,
     ChargerConnectionStatus,
     ChargerPowerStatus,
@@ -6,7 +6,7 @@ from polestar_api.models.battery import (
     ChargingType,
     GetBatteryResponse,
 )
-from polestar_api.models.common import Timestamp, VehicleRequest
+from .polestar_api.models.common import Timestamp, VehicleRequest
 
 
 class TestTimestamp:

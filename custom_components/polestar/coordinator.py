@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from datetime import time as dt_time, timedelta
+from datetime import UTC, datetime, time as dt_time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from grpclib.const import Status as GrpcStatus
@@ -131,6 +131,12 @@ _FETCH_ATTRS: tuple[tuple[str, str], ...] = (
 )
 _FETCH_ATTR_LOOKUP = dict(_FETCH_ATTRS)
 
+# Odometer normally arrives through its gRPC stream. Expose get_odometer to
+# targeted refreshes for the adaptive trip recorder without adding another
+# odometer subscription to every normal full poll.
+_FETCH_ATTR_LOOKUP["odometer"] = "get_odometer"
+_FULL_POLL_ATTRS = tuple(attr for attr, _method in _FETCH_ATTRS)
+
 
 class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
     """Coordinator that polls all vehicle data concurrently."""
@@ -149,11 +155,14 @@ class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
                 seconds=entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
             ),
             config_entry=entry,
+            always_update=True,
         )
         self.vehicle = vehicle
         self.climate_preferences = ClimateCommandPreferences()
         self._installed_version_cache: str | None = None
         self._stream_tasks: dict[str, asyncio.Task[None]] = {}
+        self._unsupported_streams: set[str] = set()
+        self._stream_stats: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _command_succeeded(response: Any) -> bool:
@@ -275,7 +284,7 @@ class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
 
     async def _async_update_data(self) -> PolestarVehicleData:
         previous = self.data or PolestarVehicleData()
-        values, successful_fetches = await self._async_fetch_values(_FETCH_ATTR_LOOKUP, previous)
+        values, successful_fetches = await self._async_fetch_values(_FULL_POLL_ATTRS, previous)
 
         if successful_fetches == 0:
             if self.data is not None:
@@ -284,6 +293,7 @@ class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
 
         data = PolestarVehicleData(**values)
         self._update_installed_version_cache(data.software)
+        self._restart_dead_streams()
         return data
 
     async def async_request_attrs_refresh(self, *attrs: str) -> None:
@@ -301,68 +311,166 @@ class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
         if "software" in values:
             self._update_installed_version_cache(data.software)
         self.async_set_updated_data(data)
+        self._restart_dead_streams()
+
+    _STREAMS: dict[str, str] = {
+        "battery": "stream_battery",
+        "location": "stream_location",
+        "parked_location": "stream_parked_location",
+        "climate": "stream_climate",
+        "exterior": "stream_exterior",
+        "precleaning": "stream_precleaning",
+        "odometer": "stream_odometer",
+    }
+
+    @staticmethod
+    def _safe_stream_error(err: Exception) -> str:
+        """Return a bounded, single-line diagnostic error string."""
+        message = str(err).replace("\r", " ").replace("\n", " ")[:160]
+        return f"{type(err).__name__}: {message}" if message else type(err).__name__
+
+    def _stream_stat(self, attr: str) -> dict[str, Any]:
+        return self._stream_stats.setdefault(
+            attr,
+            {
+                "status": "not_started",
+                "frames_received": 0,
+                "last_frame": None,
+                "last_started": None,
+                "last_error": None,
+                "consecutive_failures": 0,
+            },
+        )
+
+    def _start_stream_task(self, attr: str, method_name: str) -> None:
+        method = getattr(self.vehicle, method_name, None)
+        if method is None:
+            return
+        stat = self._stream_stat(attr)
+        stat["status"] = "connecting"
+        stat["last_started"] = datetime.now(UTC).isoformat()
+        stat["last_error"] = None
+        self._stream_tasks[attr] = asyncio.create_task(
+            self._async_run_stream(attr, method),
+            name=f"polestar-{self.vehicle.vin}-{attr}-stream",
+        )
 
     async def async_start_streams(self) -> None:
-        """Start background stream tasks for live battery/location/exterior/climate updates."""
+        """Start background stream tasks for supported live attributes."""
         if self._stream_tasks:
             return
+        for attr, method_name in self._STREAMS.items():
+            self._start_stream_task(attr, method_name)
 
-        streams = {
-            "battery": "stream_battery",
-            "location": "stream_location",
-            "climate": "stream_climate",
-            "exterior": "stream_exterior",
-            "precleaning": "stream_precleaning",
-            "odometer": "stream_odometer",
-        }
-        for attr, method_name in streams.items():
-            method = getattr(self.vehicle, method_name, None)
-            if method is not None:
-                self._stream_tasks[attr] = asyncio.create_task(
-                    self._async_run_stream(attr, method),
-                    name=f"polestar-{self.vehicle.vin}-{attr}-stream",
-                )
+    def _restart_dead_streams(self) -> None:
+        """Restart dropped streams after successful API communication."""
+        for attr, method_name in self._STREAMS.items():
+            if attr in self._unsupported_streams:
+                continue
+            task = self._stream_tasks.get(attr)
+            if task is not None and not task.done():
+                continue
+            self._start_stream_task(attr, method_name)
+
+    @property
+    def stream_diagnostics(self) -> dict[str, dict[str, Any]]:
+        """Return JSON-safe diagnostics for the live gRPC streams."""
+        diagnostics: dict[str, dict[str, Any]] = {}
+        for attr, method_name in self._STREAMS.items():
+            stat = dict(self._stream_stat(attr))
+            task = self._stream_tasks.get(attr)
+            stat["method"] = method_name
+            stat["supported"] = attr not in self._unsupported_streams
+            stat["task_done"] = task.done() if task is not None else None
+            diagnostics[attr] = stat
+        return diagnostics
 
     async def async_shutdown(self) -> None:
-        """Cancel any running stream tasks."""
+        """Cancel running stream tasks."""
         for task in self._stream_tasks.values():
             task.cancel()
         if self._stream_tasks:
             await asyncio.gather(*self._stream_tasks.values(), return_exceptions=True)
+        for attr in self._STREAMS:
+            stat = self._stream_stat(attr)
+            if stat["status"] != "unsupported":
+                stat["status"] = "stopped"
         self._stream_tasks.clear()
+        self._unsupported_streams.clear()
 
     async def _async_run_stream(
         self,
         attr: str,
         stream_factory: Callable[[], Awaitable[Any] | Any],
     ) -> None:
-        """Run a single long-lived stream and merge updates into coordinator state."""
+        """Run one long-lived stream and merge updates into coordinator state."""
         consecutive_failures = 0
+        stat = self._stream_stat(attr)
         while True:
             try:
+                stat["status"] = "connecting" if stat["frames_received"] == 0 else "running"
                 async for value in stream_factory():
                     consecutive_failures = 0
+                    stat["status"] = "running"
+                    stat["frames_received"] += 1
+                    stat["last_frame"] = datetime.now(UTC).isoformat()
+                    stat["last_error"] = None
+                    stat["consecutive_failures"] = 0
                     current = self.data or PolestarVehicleData()
                     merged_value = self._merge_partial_update(attr, getattr(current, attr), value)
                     self.async_set_updated_data(replace(current, **{attr: merged_value}))
+
+                # A subscription that exits cleanly is still dead; leave it in a
+                # restartable state so the next successful poll can reopen it.
+                stat["status"] = "dead"
+                return
+
             except asyncio.CancelledError:
+                stat["status"] = "stopped"
                 raise
+
             except (AuthError, TokenExpiredError) as err:
-                _LOGGER.warning("Live %s stream auth failure for %s: %s", attr, self.vehicle.vin, err)
+                consecutive_failures += 1
+                stat["status"] = "retrying"
+                stat["consecutive_failures"] = consecutive_failures
+                stat["last_error"] = self._safe_stream_error(err)
+                _LOGGER.warning(
+                    "Live %s stream auth failure for …%s",
+                    attr,
+                    self.vehicle.vin[-6:],
+                )
                 await asyncio.sleep(STREAM_RETRY_DELAY)
+
             except GRPCError as err:
                 if err.status == GrpcStatus.UNIMPLEMENTED:
-                    _LOGGER.debug("Live %s stream not supported for %s, stopping", attr, self.vehicle.vin)
+                    self._unsupported_streams.add(attr)
+                    stat["status"] = "unsupported"
+                    stat["last_error"] = "GRPCError: UNIMPLEMENTED"
+                    _LOGGER.debug(
+                        "Live %s stream not supported for …%s",
+                        attr,
+                        self.vehicle.vin[-6:],
+                    )
                     return
+
                 consecutive_failures += 1
+                stat["status"] = "retrying"
+                stat["consecutive_failures"] = consecutive_failures
+                stat["last_error"] = self._safe_stream_error(err)
                 delay = self._stream_retry_delay(attr, consecutive_failures, err)
                 if delay is None:
+                    stat["status"] = "dead"
                     return
                 await asyncio.sleep(delay)
+
             except Exception as err:  # noqa: BLE001
                 consecutive_failures += 1
+                stat["status"] = "retrying"
+                stat["consecutive_failures"] = consecutive_failures
+                stat["last_error"] = self._safe_stream_error(err)
                 delay = self._stream_retry_delay(attr, consecutive_failures, err)
                 if delay is None:
+                    stat["status"] = "dead"
                     return
                 await asyncio.sleep(delay)
 
@@ -370,16 +478,22 @@ class PolestarCoordinator(DataUpdateCoordinator[PolestarVehicleData]):
         """Return the backoff delay in seconds, or None to stop retrying."""
         if failures >= STREAM_MAX_RETRIES:
             _LOGGER.warning(
-                "Live %s stream for %s failed %d times in a row, giving up — "
-                "data will still update via polling. "
-                "Reload the integration to restart streams",
-                attr, self.vehicle.vin, failures,
+                "Live %s stream for …%s failed %d times; waiting for a successful poll to restart it",
+                attr,
+                self.vehicle.vin[-6:],
+                failures,
             )
             return None
         delay = min(STREAM_RETRY_DELAY * (2 ** (failures - 1)), 600)
-        _LOGGER.debug("Live %s stream failed for %s (attempt %d): %s — retrying in %ds",
-                       attr, self.vehicle.vin, failures, err, delay)
+        _LOGGER.debug(
+            "Live %s stream failed for …%s (attempt %d); retrying in %ds",
+            attr,
+            self.vehicle.vin[-6:],
+            failures,
+            delay,
+        )
         return delay
+
 
     @staticmethod
     def _merge_partial_update(attr: str, previous: Any, result: Any) -> Any:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from .trip_recorder import create_trip_sensor_entities
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -500,15 +499,6 @@ async def async_setup_entry(
     for coordinator in data["coordinators"].values():
         for desc in SENSORS:
             entities.append(PolestarSensor(coordinator, desc))
-    for recorder in data.get(
-        "trip_recorders",
-        {}
-    ).values():
-        entities.extend(
-            create_trip_sensor_entities(
-                recorder
-            )
-        )
     async_add_entities(entities)
 
 

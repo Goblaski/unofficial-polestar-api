@@ -13,12 +13,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .const import CONF_DEMO, CONF_VIN, DOMAIN, PLATFORMS
 from .coordinator import PolestarCoordinator
+from .credential_store import HassCredentialStore
 from .demo import DemoVehicle
 from .polestar_api import PolestarApi, Vehicle
 from .polestar_api.exceptions import ApiError, AuthError
 from .services import async_register_services, async_unregister_services
 from .token_store import HassTokenStore
-from .trip_recorder import TripRecorder
 
 _LOGGER = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -37,10 +37,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return await _async_setup_demo(hass, entry)
 
     email = entry.data[CONF_EMAIL]
-    # Password is intentionally optional after first successful setup. Persistent
-    # authentication should use the private refresh-token store instead.
-    password = entry.data.get(CONF_PASSWORD)
     configured_vin = entry.data[CONF_VIN]
+
+    credential_store = HassCredentialStore(hass, entry.entry_id)
+    stored_credentials = await credential_store.load()
+
+    # During initial setup/reauth the password can still be present in the
+    # config entry for one setup cycle. Afterwards it is kept only in the
+    # dedicated private credential store.
+    password = entry.data.get(CONF_PASSWORD)
+    if password is None and stored_credentials is not None:
+        if stored_credentials.email == email:
+            password = stored_credentials.password
 
     token_store = HassTokenStore(hass, entry.entry_id)
     api = PolestarApi(email, password, token_store=token_store)
@@ -48,9 +56,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await api.async_init()
 
-        # Once the OIDC exchange/refresh succeeds, remove the long-lived password
-        # from Home Assistant's config-entry JSON. If refresh later fails, HA's
-        # reauthentication flow asks for it again instead of storing it forever.
+        # Persist a verified fallback credential only after authentication has
+        # succeeded. Store is private/atomic but not encrypted at rest.
+        if password is not None:
+            await credential_store.save(email, password)
+
+        # Keep the generic config-entry JSON free of the long-lived password.
         if CONF_PASSWORD in entry.data:
             new_data = dict(entry.data)
             new_data.pop(CONF_PASSWORD, None)
@@ -64,7 +75,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if err.status_code is not None
                 else "GraphQL/API error"
             )
-            _LOGGER.warning("Vehicle list lookup failed (%s); using configured VIN", failure)
+            _LOGGER.warning(
+                "Vehicle list lookup failed (%s); using configured VIN",
+                failure,
+            )
             vehicles = []
     except AuthError as err:
         await api.close()
@@ -88,34 +102,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = PolestarCoordinator(hass, vehicle, entry)
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_start_streams()
-
-    coordinators: dict[str, PolestarCoordinator] = {
-        vehicle.vin: coordinator
-    }
-
-    trip_recorders = {}
-
-    try:
-        trip_recorder = TripRecorder(
-            hass,
-            coordinator,
-            entry.entry_id,
-        )
-
-        await trip_recorder.async_start()
-
-        trip_recorders[vehicle.vin] = trip_recorder
-
-    except Exception:
-        _LOGGER.exception(
-            "Failed to start Polestar trip recorder"
-        )
+    coordinators: dict[str, PolestarCoordinator] = {vehicle.vin: coordinator}
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "api": api,
         "coordinators": coordinators,
-        "trip_recorders": trip_recorders,
     }
 
     async_register_services(hass)
@@ -164,11 +156,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         data = hass.data[DOMAIN].pop(entry.entry_id)
-        for recorder in data.get(
-            "trip_recorders",
-            {}
-        ).values():
-            await recorder.async_stop()
+
         for coordinator in data["coordinators"].values():
             await coordinator.async_shutdown()
         if data["api"] is not None:
@@ -179,10 +167,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Clean up stored tokens when entry is removed."""
+    """Clean up private state when a Polestar entry is removed."""
     token_store = HassTokenStore(hass, entry.entry_id)
     await token_store.remove()
-    await TripRecorder.async_remove_storage(
-        hass,
-        entry.entry_id,
-    )
+
+    credential_store = HassCredentialStore(hass, entry.entry_id)
+    await credential_store.remove()
